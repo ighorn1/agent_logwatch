@@ -26,6 +26,7 @@ USAGE = (
     "SKILL:logwatch ARGS:overage <minutes>\n"
     "SKILL:logwatch ARGS:analyze <hostname>\n"
     "SKILL:logwatch ARGS:analyze_all\n"
+    "SKILL:logwatch ARGS:report [hostname] [YYYY-MM-DD]\n"
     "SKILL:logwatch ARGS:collect [since]\n"
     "SKILL:logwatch ARGS:retention <jours>\n"
     "SKILL:logwatch ARGS:logs <hostname> [N]\n"
@@ -259,6 +260,54 @@ def run(args: str, context) -> str:
                 f"  {ana} [{r['received_at'][:16]}][{r['severity']:8s}] {r['log_line'][:120]}"
             )
         return "\n".join(lines)
+
+    # ── report <hostname> [date] ──────────────────────────────────────────────
+    if action == 'report':
+        p        = rest.split(None, 1)
+        hostname = p[0].strip() if p else ''
+        date_str = p[1].strip() if len(p) > 1 else ''
+
+        if not hostname:
+            # Sans hostname : liste les derniers rapports toutes machines
+            with _db(context) as conn:
+                rows = conn.execute(
+                    "SELECT m.hostname, r.report_date, r.logs_count, r.created_at "
+                    "FROM reports r JOIN machines m ON m.id=r.machine_id "
+                    "ORDER BY r.id DESC LIMIT 20"
+                ).fetchall()
+            if not rows:
+                return "Aucun rapport stocké."
+            lines = ["── Rapports disponibles ──────────────────────"]
+            for r in rows:
+                lines.append(
+                    f"  {r['report_date']} | {r['hostname']:<30s} | {r['logs_count']} erreurs"
+                )
+            lines.append("\nUtilise : logwatch report <hostname> [YYYY-MM-DD]")
+            return "\n".join(lines)
+
+        with _db(context) as conn:
+            m = conn.execute(
+                "SELECT id FROM machines WHERE hostname=?", (hostname,)
+            ).fetchone()
+            if not m:
+                return f"Machine '{hostname}' introuvable."
+
+            if date_str:
+                row = conn.execute(
+                    "SELECT content, report_date, logs_count FROM reports "
+                    "WHERE machine_id=? AND report_date=? ORDER BY id DESC LIMIT 1",
+                    (m['id'], date_str)
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT content, report_date, logs_count FROM reports "
+                    "WHERE machine_id=? ORDER BY id DESC LIMIT 1",
+                    (m['id'],)
+                ).fetchone()
+
+        if not row:
+            return f"Aucun rapport trouvé pour '{hostname}'" + (f" le {date_str}" if date_str else "") + "."
+        return f"[{row['report_date']} — {row['logs_count']} erreurs]\n\n{row['content']}"
 
     # ── collect [since] ───────────────────────────────────────────────────────
     if action == 'collect':

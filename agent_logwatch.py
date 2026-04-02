@@ -21,32 +21,62 @@ from agents_core import BaseAgent, AgentContext, Message, MessageType
 logger = logging.getLogger(__name__)
 
 # ─── Pré-filtres sans LLM ────────────────────────────────────────────────────
+# Tier 1 — signaux critiques (mots-clés uppercase exacts, très peu de faux positifs)
+# Tier 2 — patterns contextuels précis (évite les faux positifs du lowercase générique)
 
 FILTER_PATTERNS = [
-    re.compile(r'\b(ERROR|CRITICAL|FATAL|PANIC|EMERG|ALERT|CRIT)\b'),
-    re.compile(r'\bException\b|\bTraceback\b|\bTraceback \(most recent'),
+    # Tier 1 : mots-clés uppercase — très fiables
+    re.compile(r'\b(EMERG|ALERT|CRIT|CRITICAL|FATAL|PANIC)\b'),
+    re.compile(r'\bERROR\b'),                                       # uppercase uniquement
+    re.compile(r'\bException\b|\bTraceback\b'),                     # Python/Java
+    re.compile(r'<[0-3]>'),                                         # syslog prio 0-3
+
+    # Tier 2 : patterns précis avec contexte
     re.compile(r'\bsegfault\b|\bSegmentation fault\b', re.IGNORECASE),
-    re.compile(r'\bout of memory\b|\bOOM killer\b|\bOOM-killer\b', re.IGNORECASE),
-    re.compile(r'\b(failed|failure)\b', re.IGNORECASE),
-    re.compile(r'\bkilled\b', re.IGNORECASE),
-    re.compile(r'\b(BUG|Oops):\s'),
-    re.compile(r'<[0-3]>'),          # syslog priorities 0=emerg, 1=alert, 2=crit, 3=err
+    re.compile(r'\bout of memory\b|\bOOM[ -]killer\b', re.IGNORECASE),
     re.compile(r'\bcore dumped\b', re.IGNORECASE),
-    re.compile(r'\bpanic\b', re.IGNORECASE),
-    re.compile(r'\bdenied\b.*\bpermission\b|\bpermission\b.*\bdenied\b', re.IGNORECASE),
-    re.compile(r'\bauthentication failure\b|\bfailed login\b|\bfailed password\b', re.IGNORECASE),
-    re.compile(r'\bdisk full\b|\bno space left\b', re.IGNORECASE),
-    re.compile(r'\bconnection refused\b|\bconnection timed out\b', re.IGNORECASE),
-    re.compile(r'\bssh.*invalid user\b|\binvalid user.*ssh\b', re.IGNORECASE),
+    re.compile(r'\b(BUG|Oops):\s'),                                 # kernel bugs
+
+    # systemd : "Failed to start X" ou "failed with result"
+    re.compile(r'systemd.*:\s+Failed\b', re.IGNORECASE),
+    re.compile(r'\bfailed with result\b', re.IGNORECASE),
+    re.compile(r'\.service.*failed\b', re.IGNORECASE),
+
+    # kernel : OOM kill, panic noyau
+    re.compile(r'kernel:.*[Kk]ill\b.*\bprocess\b'),
+    re.compile(r'kernel:.*[Pp]anic\b'),
+
+    # Authentification : patterns précis, pas juste "failed"
+    re.compile(r'\bauthentication failure\b', re.IGNORECASE),
+    re.compile(r'\bFailed password\b|\bFailed publickey\b'),        # sshd exact
+    re.compile(r'\bInvalid user\b'),                                 # sshd exact
+
+    # Disque / espace
+    re.compile(r'\bno space left on device\b', re.IGNORECASE),
+    re.compile(r'\bdisk full\b', re.IGNORECASE),
+
+    # Réseau : refus explicite (pas les retries normaux)
+    re.compile(r'\bconnection refused\b', re.IGNORECASE),
+]
+
+# Lignes à exclure même si un pattern matche (bruit connu)
+EXCLUDE_PATTERNS = [
+    re.compile(r'\bsystemd\b.*\bStarted\b', re.IGNORECASE),
+    re.compile(r'\bLogWatch\b', re.IGNORECASE),          # éviter de s'auto-analyser
+    re.compile(r'^\s*$'),
 ]
 
 SEVERITY_RANK = {
     'EMERG': 0, 'ALERT': 1, 'CRIT': 2, 'CRITICAL': 2, 'FATAL': 2, 'PANIC': 2,
-    'ERROR': 3, 'ERR': 3,
-    'FAILED': 4, 'FAILURE': 4, 'DENIED': 4,
+    'ERROR': 3,
+    'FAILED': 4, 'FAILURE': 4,
     'EXCEPTION': 5, 'TRACEBACK': 5,
-    'KILLED': 6, 'OOM': 6, 'SEGFAULT': 6, 'CORE': 6,
+    'OOM': 6, 'SEGFAULT': 6, 'CORE': 6,
+    'INVALID USER': 7, 'AUTH': 7,
 }
+
+# Déduplication : max N occurrences de la même signature par session de filtrage
+MAX_DUPLICATES = 5
 
 CHUNK_SIZE = 150  # lignes envoyées au LLM par appel
 
@@ -155,6 +185,16 @@ class LogWatchAgent(BaseAgent):
                 INSERT OR IGNORE INTO agent_config VALUES ('enabled',             '1');
                 INSERT OR IGNORE INTO agent_config VALUES ('log_retention_days',  '7');
                 INSERT OR IGNORE INTO agent_config VALUES ('local_collect_time',  '');
+
+                CREATE TABLE IF NOT EXISTS reports (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    machine_id   INTEGER NOT NULL,
+                    report_date  TEXT    NOT NULL,
+                    content      TEXT    NOT NULL,
+                    logs_count   INTEGER DEFAULT 0,
+                    created_at   TEXT    NOT NULL,
+                    FOREIGN KEY (machine_id) REFERENCES machines(id)
+                );
             """)
 
     def _cfg(self, key: str, default: str = '') -> str:
@@ -255,16 +295,47 @@ class LogWatchAgent(BaseAgent):
             logger.error(f"[_on_log_received] {e}", exc_info=True)
 
     def _prefilter(self, lines: list) -> list:
-        """Filtre les lignes, retourne [(line, severity)]."""
-        result = []
+        """
+        Filtre les lignes, retourne [(line, severity)].
+        - Applique les patterns d'exclusion en premier
+        - Déduplique les lignes similaires (même signature, max MAX_DUPLICATES)
+        """
+        result     = []
+        seen_sigs  = {}   # signature → count
+
         for line in lines:
             line = str(line).strip()
             if not line:
                 continue
+
+            # Exclusions d'abord
+            if any(ex.search(line) for ex in EXCLUDE_PATTERNS):
+                continue
+
+            # Test des patterns d'inclusion
+            matched = False
             for pat in FILTER_PATTERNS:
                 if pat.search(line):
-                    result.append((line, _detect_severity(line)))
+                    matched = True
                     break
+            if not matched:
+                continue
+
+            # Déduplication : signature = partie fixe de la ligne (sans timestamp/PID)
+            sig = re.sub(r'\b\d+\b', 'N', line)   # remplace les nombres
+            sig = re.sub(r'\[[\w/]+\]', '[X]', sig)  # remplace les identifiants entre []
+            sig = sig[:120]
+
+            count = seen_sigs.get(sig, 0)
+            if count >= MAX_DUPLICATES:
+                continue
+            seen_sigs[sig] = count + 1
+
+            # Annoter si répétition
+            sev  = _detect_severity(line)
+            entry = line if count == 0 else f"{line}  [×{count+1}]"
+            result.append((entry, sev))
+
         return result
 
     def _register_machine(self, hostname: str) -> int:
@@ -644,6 +715,13 @@ class LogWatchAgent(BaseAgent):
             )
             report += '\n\n'.join(all_reports)
             self._notify_admin(report)
+            # Stocker le rapport en DB
+            with self._get_db() as conn:
+                conn.execute(
+                    "INSERT INTO reports (machine_id, report_date, content, logs_count, created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (machine_id, today, report, len(logs_list), datetime.now().isoformat())
+                )
         else:
             self._notify_admin(f"ℹ️ LogWatch: **{hostname}** — LLM n'a pas retourné de rapport.")
 
