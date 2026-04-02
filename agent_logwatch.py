@@ -719,6 +719,11 @@ class LogWatchAgent(BaseAgent):
                 self._extension_event.set()
                 return "⏸️ Analyse reportée au prochain créneau."
 
+        # Dispatch direct vers les skills métier (contourne le LLM)
+        if cmd_lower in ('logwatch', 'machine'):
+            ctx = AgentContext(self)
+            return self.skills.run(cmd_lower, args, ctx)
+
         if cmd_lower == 'update':
             return self._self_update()
 
