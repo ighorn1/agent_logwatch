@@ -24,6 +24,9 @@
   "db_path": "/opt/agent_logwatch/data/logwatch.db",
   "system_prompt": "/opt/agent_logwatch/config/system_prompt.txt",
   "use_llm_coordinator": true,
+  "local_log_since": "yesterday",
+  "local_log_units": [],
+  "local_hostname": "",
   "llm_profiles": {
     "cloud": "gpt-oss:120b-cloud"
   }

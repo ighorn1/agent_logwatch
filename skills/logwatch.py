@@ -17,7 +17,7 @@ Usage LLM :
 import threading
 from datetime import datetime, timedelta
 
-DESCRIPTION = "Contrôle LogWatch : schedule, analyse à la demande, statut, logs en attente"
+DESCRIPTION = "Contrôle LogWatch : schedule, analyse à la demande, statut, logs en attente, collecte locale"
 USAGE = (
     "SKILL:logwatch ARGS:status\n"
     "SKILL:logwatch ARGS:schedule show\n"
@@ -26,6 +26,7 @@ USAGE = (
     "SKILL:logwatch ARGS:overage <minutes>\n"
     "SKILL:logwatch ARGS:analyze <hostname>\n"
     "SKILL:logwatch ARGS:analyze_all\n"
+    "SKILL:logwatch ARGS:collect [since]\n"
     "SKILL:logwatch ARGS:retention <jours>\n"
     "SKILL:logwatch ARGS:logs <hostname> [N]\n"
     "SKILL:logwatch ARGS:reset <hostname>"
@@ -238,6 +239,12 @@ def run(args: str, context) -> str:
                 f"  {ana} [{r['received_at'][:16]}][{r['severity']:8s}] {r['log_line'][:120]}"
             )
         return "\n".join(lines)
+
+    # ── collect [since] ───────────────────────────────────────────────────────
+    if action == 'collect':
+        since = rest.strip() or 'yesterday'
+        result = context.agent.collect_local_logs(since=since)
+        return f"✅ Collecte locale terminée:\n{result}"
 
     # ── reset <hostname> ──────────────────────────────────────────────────────
     if action == 'reset':

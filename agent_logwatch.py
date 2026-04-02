@@ -324,6 +324,9 @@ class LogWatchAgent(BaseAgent):
         if self._slot_end_time <= now:
             self._slot_end_time += timedelta(days=1)
 
+        # Collecter les logs locaux avant de commencer l'analyse
+        self._collect_local_logs()
+
         self._analysis_stop.clear()
         self._analysis_thread = threading.Thread(
             target=self._analysis_loop, daemon=True, name="logwatch-analysis"
@@ -335,6 +338,72 @@ class LogWatchAgent(BaseAgent):
         """Signale la fin du créneau (appelé par APScheduler)."""
         logger.info("Fin de créneau signalée.")
         self._analysis_stop.set()
+
+    # ─── Collecte locale ─────────────────────────────────────────────────────
+
+    def collect_local_logs(self, since: str = 'yesterday') -> str:
+        """
+        Collecte les logs de la machine locale via journalctl et les pré-filtre.
+        Appelé automatiquement au début de chaque créneau, ou manuellement.
+        Retourne un résumé de ce qui a été collecté.
+        """
+        import subprocess
+        import socket
+
+        local_hostname = self.config.get('local_hostname') or socket.getfqdn()
+        units          = self.config.get('local_log_units', [])   # [] = tous les services
+        since_str      = since or self.config.get('local_log_since', 'yesterday')
+
+        cmd = ['journalctl', '--no-pager', '--output=short-iso', f'--since={since_str}']
+        for unit in units:
+            cmd += ['-u', unit]
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60
+            )
+            raw_lines = result.stdout.splitlines()
+        except subprocess.TimeoutExpired:
+            logger.error("[local_logs] journalctl timeout")
+            return "Erreur: journalctl timeout (60s)"
+        except FileNotFoundError:
+            logger.warning("[local_logs] journalctl non disponible sur cette machine")
+            return "journalctl non disponible."
+        except Exception as e:
+            logger.error(f"[local_logs] {e}")
+            return f"Erreur collecte locale: {e}"
+
+        if not raw_lines:
+            return f"Aucun log local depuis '{since_str}'."
+
+        machine_id = self._register_machine(local_hostname)
+        filtered   = self._prefilter(raw_lines)
+
+        if filtered:
+            now = datetime.now().isoformat()
+            with self._get_db() as conn:
+                conn.executemany(
+                    "INSERT INTO filtered_logs (machine_id, log_line, severity, received_at) VALUES (?,?,?,?)",
+                    [(machine_id, line, sev, now) for line, sev in filtered]
+                )
+                conn.execute(
+                    "UPDATE machines SET last_log_at=? WHERE id=?",
+                    (now, machine_id)
+                )
+
+        msg = (
+            f"[local] {local_hostname}: {len(filtered)}/{len(raw_lines)} lignes filtrées"
+            + (f" ({', '.join(units)})" if units else " (tous services)")
+        )
+        logger.info(msg)
+        return msg
+
+    def _collect_local_logs(self):
+        """Wrapper silencieux appelé au début du slot."""
+        try:
+            self.collect_local_logs()
+        except Exception as e:
+            logger.error(f"[_collect_local_logs] {e}")
 
     # ─── Boucle d'analyse ────────────────────────────────────────────────────
 

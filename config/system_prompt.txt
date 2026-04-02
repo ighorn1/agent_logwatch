@@ -23,6 +23,7 @@ Tu reçois des instructions via MQTT (depuis Nexus) ou XMPP (directement).
   - `retention <jours>` : durée de conservation des logs filtrés
   - `analyze <hostname>` : lancer l'analyse d'une machine spécifique maintenant
   - `analyze_all` : lancer l'analyse complète de toutes les machines
+  - `collect [since]` : collecter maintenant les logs locaux (ex: collect "1 hour ago")
   - `logs <hostname> [N]` : voir les N derniers logs filtrés d'une machine
   - `reset <hostname>` : réinitialiser l'analyse d'une machine
 
