@@ -1,0 +1,30 @@
+{
+  "agent_id": "logwatch",
+  "xmpp": {
+    "jid": "logwatch@xmpp.ovh",
+    "password": "Matador3721",
+    "admin_jid": "sylvain@xmpp.ovh",
+    "muc_room": "agents@muc.xmpp.ovh",
+    "use_omemo": true
+  },
+  "mqtt": {
+    "host": "localhost",
+    "port": 1883,
+    "username": null,
+    "password": null,
+    "tls": false
+  },
+  "llm": {
+    "base_url": "http://192.168.7.119:11434",
+    "model": "gpt-oss:120b-cloud",
+    "temperature": 0.2
+  },
+  "work_hours": "00:00-23:59",
+  "queue_db": "/opt/agent_logwatch/data/queue.db",
+  "db_path": "/opt/agent_logwatch/data/logwatch.db",
+  "system_prompt": "/opt/agent_logwatch/config/system_prompt.txt",
+  "use_llm_coordinator": true,
+  "llm_profiles": {
+    "cloud": "gpt-oss:120b-cloud"
+  }
+}
