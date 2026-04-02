@@ -154,6 +154,7 @@ class LogWatchAgent(BaseAgent):
                 INSERT OR IGNORE INTO agent_config VALUES ('max_overage_minutes', '30');
                 INSERT OR IGNORE INTO agent_config VALUES ('enabled',             '1');
                 INSERT OR IGNORE INTO agent_config VALUES ('log_retention_days',  '7');
+                INSERT OR IGNORE INTO agent_config VALUES ('local_collect_time',  '');
             """)
 
     def _cfg(self, key: str, default: str = '') -> str:
@@ -288,7 +289,7 @@ class LogWatchAgent(BaseAgent):
         """(Re)programme les jobs APScheduler selon la config DB."""
         if not self._scheduler:
             return
-        for job_id in ('_slot_start', '_slot_end'):
+        for job_id in ('_slot_start', '_slot_end', '_local_collect'):
             try:
                 self._scheduler.remove_job(job_id)
             except Exception:
@@ -313,6 +314,20 @@ class LogWatchAgent(BaseAgent):
         self._scheduler.add_job(
             self._signal_slot_end, 'cron', hour=eh, minute=em, id='_slot_end'
         )
+
+        # Job de collecte locale (séparé, configurable indépendamment)
+        local_collect = self._cfg('local_collect_time', '')
+        if local_collect:
+            try:
+                lh, lm = map(int, local_collect.split(':'))
+                self._scheduler.add_job(
+                    self._collect_local_logs, 'cron',
+                    hour=lh, minute=lm, id='_local_collect'
+                )
+                logger.info(f"Collecte locale programmée: {local_collect}")
+            except ValueError:
+                logger.error(f"Format local_collect_time invalide: {local_collect}")
+
         logger.info(f"Analyse programmée: {start_str} → {end_str}")
 
     def _start_slot(self):
@@ -323,9 +338,6 @@ class LogWatchAgent(BaseAgent):
         self._slot_end_time = now.replace(hour=eh, minute=em, second=0, microsecond=0)
         if self._slot_end_time <= now:
             self._slot_end_time += timedelta(days=1)
-
-        # Collecter les logs locaux avant de commencer l'analyse
-        self._collect_local_logs()
 
         self._analysis_stop.clear()
         self._analysis_thread = threading.Thread(

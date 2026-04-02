@@ -19,6 +19,8 @@ Tu reçois des instructions via MQTT (depuis Nexus) ou XMPP (directement).
   - `schedule show` : voir le créneau horaire configuré
   - `schedule set HH:MM-HH:MM` : définir le créneau d'analyse automatique
   - `schedule enable/disable` : activer/désactiver l'analyse automatique
+  - `schedule local HH:MM` : heure de collecte des logs locaux (machine hébergeant l'agent)
+  - `schedule local off` : désactiver la collecte locale automatique
   - `overage <minutes>` : définir le dépassement maximum autorisé
   - `retention <jours>` : durée de conservation des logs filtrés
   - `analyze <hostname>` : lancer l'analyse d'une machine spécifique maintenant

@@ -116,6 +116,26 @@ def run(args: str, context) -> str:
                 f"État : {'activé ✅' if enabled else 'désactivé ❌'}"
             )
 
+        if sub == 'local':
+            # schedule local HH:MM — configurer l'heure de collecte locale
+            # schedule local off  — désactiver
+            if not sub_rest:
+                val = _cfg(context, 'local_collect_time', '')
+                return f"Collecte locale : {val or 'désactivée'}"
+            if sub_rest.lower() == 'off':
+                _set_cfg(context, 'local_collect_time', '')
+                context.agent._reload_schedule()
+                return "✅ Collecte locale désactivée."
+            try:
+                lh, lm = map(int, sub_rest.split(':'))
+                if not (0 <= lh < 24 and 0 <= lm < 60):
+                    return "Heure invalide."
+            except ValueError:
+                return "Format: schedule local HH:MM  (ex: 01:00)  ou  off"
+            _set_cfg(context, 'local_collect_time', sub_rest.strip())
+            context.agent._reload_schedule()
+            return f"✅ Collecte locale programmée à {sub_rest.strip()}."
+
         if sub == 'set':
             # Format : HH:MM-HH:MM
             if '-' not in sub_rest:
@@ -140,7 +160,7 @@ def run(args: str, context) -> str:
             context.agent._reload_schedule()
             return f"✅ Analyse automatique {'activée' if val=='1' else 'désactivée'}."
 
-        return "Sub-commande inconnue. Utilise : show, set <HH:MM-HH:MM>, enable, disable"
+        return "Sub-commande inconnue. Utilise : show, set <HH:MM-HH:MM>, enable, disable, local <HH:MM|off>"
 
     # ── overage ───────────────────────────────────────────────────────────────
     if action == 'overage':
